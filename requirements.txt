@@ -1,0 +1,30 @@
+# Core numerics / data
+numpy>=2.0,<3
+pandas>=2.2,<3
+scipy>=1.12,<2
+scikit-learn>=1.4,<2
+
+# Plotting
+matplotlib>=3.8,<4
+seaborn>=0.13,<1
+
+# ML / LLM tooling
+torch>=2.3,<3
+transformers>=4.44,<5
+tokenizers>=0.19,<1
+datasets>=2.20,<3
+accelerate>=0.33,<1
+safetensors>=0.4,<1
+
+# Utilities
+tqdm>=4.66,<5
+pyyaml>=6.0,<7
+python-dotenv>=1.0,<2
+rich>=13.7,<14
+
+# Dev / notebooks
+jupyter>=1.0,<2
+ipykernel>=6.29,<7
+pytest>=8.2,<9
+ruff>=0.5,<1
+

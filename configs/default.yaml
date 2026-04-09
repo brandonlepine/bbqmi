@@ -1,0 +1,18 @@
+dataset:
+  input_csv: data/raw/example_bias_dataset.csv
+
+model:
+  name: gpt2
+  layer: -1
+  max_length: 256
+  batch_size: 8
+  device: auto
+
+pooling:
+  strategy: mean_last_token  # mean_last_token | mean_all_tokens | cls_token (if available)
+
+probe:
+  test_size: 0.2
+  random_state: 42
+  model: logistic_regression  # logistic_regression
+

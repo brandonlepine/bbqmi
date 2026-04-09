@@ -1,0 +1,42 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Environments
+.env
+.venv/
+venv/
+ENV/
+models/** 
+
+# Data & artifacts (keep dirs, ignore contents)
+data/**/*
+!data/.gitkeep
+!data/**/.gitkeep
+artifacts/**/*
+!artifacts/.gitkeep
+!artifacts/**/.gitkeep
+
+# Outputs
+outputs/**/*
+!outputs/.gitkeep
+!outputs/**/.gitkeep
+
+# Results
+results/** 
+!results/.gitkeep
+!results/**/.gitkeep
+data/** 
+
