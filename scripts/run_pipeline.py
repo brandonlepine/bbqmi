@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Sequence
+from subprocess import CalledProcessError
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -53,6 +54,19 @@ def _infer_model_id(model_path: Path) -> str:
     return model_path.name
 
 
+def _print_log_tail(log_path: Path, n_lines: int = 120) -> None:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        tail = lines[-n_lines:] if len(lines) > n_lines else lines
+        if tail:
+            print("\n--- pipeline.log (tail) ---", file=sys.stderr)
+            print("\n".join(tail), file=sys.stderr)
+            print("--- end tail ---\n", file=sys.stderr)
+    except Exception as e:
+        print(f"(Could not read log tail from {log_path}: {e})", file=sys.stderr)
+
+
 def _run_cmd(*, cmd: Sequence[str], log_path: Path | None, dry_run: bool) -> None:
     cmd_str = " ".join(cmd)
     print(f"\n$ {cmd_str}", flush=True)
@@ -66,7 +80,12 @@ def _run_cmd(*, cmd: Sequence[str], log_path: Path | None, dry_run: bool) -> Non
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"\n$ {cmd_str}\n")
         f.flush()
-        subprocess.run(cmd, check=True, stdout=f, stderr=subprocess.STDOUT)
+        try:
+            subprocess.run(cmd, check=True, stdout=f, stderr=subprocess.STDOUT)
+        except CalledProcessError as e:
+            f.flush()
+            _print_log_tail(log_path)
+            raise e
 
 
 def _stimuli_paths_for_date(run_date: str) -> tuple[Path, Path, Path]:
@@ -204,6 +223,8 @@ def main() -> int:
                 spec.model_id,
                 "--run_date",
                 run_date,
+                "--run_dir",
+                str(run_dir),
                 "--stimuli_json",
                 str(so_stimuli),
             ]
@@ -224,6 +245,8 @@ def main() -> int:
                 spec.model_id,
                 "--run_date",
                 run_date,
+                "--run_dir",
+                str(run_dir),
                 "--stimuli",
                 so_stimuli.name,
                 "--output_subdir",
@@ -245,6 +268,8 @@ def main() -> int:
                     spec.model_id,
                     "--run_date",
                     run_date,
+                    "--run_dir",
+                    str(run_dir),
                     "--stimuli",
                     gi_stimuli.name,
                     "--output_subdir",
@@ -267,6 +292,8 @@ def main() -> int:
                     spec.model_id,
                     "--run_date",
                     run_date,
+                    "--run_dir",
+                    str(run_dir),
                 ],
                 log_path=log_path,
                 dry_run=args.dry_run,
@@ -281,6 +308,8 @@ def main() -> int:
                     spec.model_id,
                     "--run_date",
                     run_date,
+                    "--run_dir",
+                    str(run_dir),
                 ],
                 log_path=log_path,
                 dry_run=args.dry_run,
@@ -296,6 +325,8 @@ def main() -> int:
                     spec.model_id,
                     "--run_date",
                     run_date,
+                    "--run_dir",
+                    str(run_dir),
                 ],
                 log_path=log_path,
                 dry_run=args.dry_run,
@@ -315,6 +346,8 @@ def main() -> int:
                     spec.model_id,
                     "--run_date",
                     run_date,
+                    "--run_dir",
+                    str(run_dir),
                     "--alpha",
                     str(args.alpha),
                     "--target_layer",
@@ -336,6 +369,8 @@ def main() -> int:
                         spec.model_id,
                         "--run_date",
                         run_date,
+                        "--run_dir",
+                        str(run_dir),
                     ],
                     log_path=log_path,
                     dry_run=args.dry_run,
@@ -356,6 +391,8 @@ def main() -> int:
                         spec.model_id,
                         "--run_date",
                         run_date,
+                        "--run_dir",
+                        str(run_dir),
                         "--alpha",
                         str(args.alpha),
                         "--target_layer",
@@ -381,6 +418,8 @@ def main() -> int:
                         spec.model_id,
                         "--run_date",
                         run_date,
+                        "--run_dir",
+                        str(run_dir),
                     ]
                     + (["--max_items", str(args.max_items)] if args.max_items is not None else []),
                     log_path=log_path,
@@ -399,6 +438,8 @@ def main() -> int:
                         spec.model_id,
                         "--run_date",
                         run_date,
+                        "--run_dir",
+                        str(run_dir),
                     ],
                     log_path=log_path,
                     dry_run=args.dry_run,
@@ -418,6 +459,8 @@ def main() -> int:
                         spec.model_id,
                         "--run_date",
                         run_date,
+                        "--run_dir",
+                        str(run_dir),
                         "--alpha",
                         str(args.alpha),
                         "--target_layer",
