@@ -553,6 +553,9 @@ def main():
     print("=" * 60)
 
     # Compute steering directions
+    if not deltas:
+        print(f"ERROR: No activation files found in {ACTIVATION_DIR} (expected item_*.npz).")
+        return
     n_layers = deltas[0]["delta_normed"].shape[0]
     directions = compute_steering_directions(deltas, n_layers=n_layers)
     print(f"Computed steering directions: {list(directions.keys())}")

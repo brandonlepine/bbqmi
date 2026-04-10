@@ -254,7 +254,12 @@ def analysis_1_trans_vs_gender(trans_dir, gender_dir, orientation_dir, so_direct
                     cosine_sim(trans_dir[layer], so_directions[g][layer])
                 )
 
-    for layer in [5, 10, 15, 20, 25, 30, 35]:
+    layers_to_show = [l for l in [5, 10, 15, 20, 25, 30, 35] if l < n_layers]
+    dropped = [l for l in [5, 10, 15, 20, 25, 30, 35] if l not in layers_to_show]
+    if dropped:
+        log(f"\n  (Skipping out-of-range layers for this model: {dropped})")
+
+    for layer in layers_to_show:
         log(f"\n  Layer {layer}:")
         log(f"    Trans ↔ SO gender component:      {results['trans_vs_gender'][layer]:+.3f}")
         log(f"    Trans ↔ SO orientation component:  {results['trans_vs_orientation'][layer]:+.3f}")

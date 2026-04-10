@@ -316,6 +316,10 @@ def analysis_3_combined_pca(so_deltas, gi_deltas, n_layers, target_layers=None):
 
     if target_layers is None:
         target_layers = [10, 20, 30]
+    target_layers = [l for l in target_layers if l < n_layers]
+    if not target_layers:
+        print(f"  (No valid target layers for n_layers={n_layers}; skipping combined PCA.)")
+        return {}
 
     results = {}
     for layer in target_layers:
@@ -362,6 +366,10 @@ def analysis_4_cross_probe(so_deltas, gi_deltas, n_layers, target_layers=None):
 
     if target_layers is None:
         target_layers = [10, 15, 20, 25, 30]
+    target_layers = [l for l in target_layers if l < n_layers]
+    if not target_layers:
+        print(f"  (No valid target layers for n_layers={n_layers}; skipping cross-probe.)")
+        return {}
 
     # For SO: label = 1 if stereo_group in bisexual/pansexual (the stereotyped family)
     # For GI: label = 1 always (trans is always stereotyped target)
@@ -446,8 +454,11 @@ def analysis_5_permutation(so_deltas, gi_deltas, n_layers, n_perm=5000):
     gl_deltas = [d for d in so_deltas if d["stereo_group"] in ["gay", "lesbian"]]
     bp_deltas = [d for d in so_deltas if d["stereo_group"] in ["bisexual", "pansexual"]]
 
-    target_layers = [10, 15, 20, 25, 30]
+    target_layers = [l for l in [10, 15, 20, 25, 30] if l < n_layers]
     results = {}
+    if not target_layers:
+        print(f"  (No valid target layers for n_layers={n_layers}; skipping permutation test.)")
+        return results
 
     for layer in target_layers:
         gl_dir = np.mean(np.stack([d["delta_normed"][layer] for d in gl_deltas]), axis=0)
@@ -759,6 +770,13 @@ def main():
     gi_items = load_activations(GI_ACTIVATION_DIR, None,
                                 GI_TERMS | CIS_TERMS | TRANS_TERMS | {"trans", "cis"})
     print(f"  GI items: {len(gi_items)}")
+
+    if not so_items:
+        print(f"ERROR: No SO activation files found in {SO_ACTIVATION_DIR} (expected item_*.npz).")
+        return
+    if not gi_items:
+        print(f"ERROR: No GI activation files found in {GI_ACTIVATION_DIR} (expected item_*.npz).")
+        return
 
     n_layers = so_items[0]["hidden_final"].shape[0]
 

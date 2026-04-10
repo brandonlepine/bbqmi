@@ -275,7 +275,7 @@ def gender_decomposition(deltas, directions, n_layers):
             )
 
     # Print summary at key layers
-    for layer in [10, 15, 20, 25, 30]:
+    for layer in [l for l in [10, 15, 20, 25, 30] if l < n_layers]:
         log(f"\n  Layer {layer}:")
         log(f"    Gender dir norm: {results['gender_direction_norm'][layer]:.4f}")
         log(f"    Orientation dir norm: {results['orientation_direction_norm'][layer]:.4f}")
@@ -815,6 +815,9 @@ def main():
     # Load data
     log("Loading SO deltas...")
     deltas = load_so_data_with_deltas()
+    if not deltas:
+        log(f"ERROR: No activation files found in {ACTIVATION_DIR} (expected item_*.npz).")
+        return
     n_layers = deltas[0]["delta_normed"].shape[0]
     log(f"Loaded {len(deltas)} deltas, {n_layers} layers")
 

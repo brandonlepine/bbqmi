@@ -669,6 +669,9 @@ def main():
         args.activation_dir = subdirs.activations_so_dir
  
     items = load_data(args.activation_dir, behavioral_path)
+    if not items:
+        print(f"ERROR: No activation files found in {args.activation_dir} (expected item_*.npz).")
+        return
  
     n_layers = items[0]["hidden_final"].shape[0]
     print(f"Model: {n_layers} layers")

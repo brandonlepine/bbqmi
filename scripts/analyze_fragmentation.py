@@ -183,7 +183,12 @@ def analysis_1_group_directions(deltas, n_layers):
         pair_cosines[(g1, g2)] = cosines
 
     # Print at key layers
-    for layer in [5, 10, 15, 20, 25, 30, 35]:
+    layers_to_show = [l for l in [5, 10, 15, 20, 25, 30, 35] if l < n_layers]
+    dropped = [l for l in [5, 10, 15, 20, 25, 30, 35] if l not in layers_to_show]
+    if dropped:
+        print(f"\n  (Skipping out-of-range layers for this model: {dropped})")
+
+    for layer in layers_to_show:
         print(f"\n  Layer {layer} — pairwise cosine between group DIM directions:")
         for (g1, g2), cosines in sorted(pair_cosines.items()):
             print(f"    {g1:12s} ↔ {g2:12s}: {cosines[layer]:.3f}")
@@ -207,6 +212,7 @@ def analysis_2_cross_probes(deltas, n_layers, target_layers=None):
 
     if target_layers is None:
         target_layers = [5, 10, 15, 20, 25, 30, 35]
+    target_layers = [l for l in target_layers if l < n_layers]
 
     groups = ["gay", "lesbian", "bisexual", "pansexual"]
     by_group = {g: [d for d in deltas if d["stereo_group"] == g] for g in groups}
@@ -276,8 +282,11 @@ def analysis_3_permutation_tests(deltas, n_layers, n_permutations=5000):
 
     # Test: is the mean alignment of gay deltas significantly different
     # from bisexual deltas? (the key comparison)
-    target_layers = [10, 15, 20, 25, 30]
+    target_layers = [l for l in [10, 15, 20, 25, 30] if l < n_layers]
     results = {}
+    if not target_layers:
+        print(f"  (No valid target layers for n_layers={n_layers}; skipping permutation tests.)")
+        return results
 
     for layer in target_layers:
         # Compute overall mean direction
@@ -370,6 +379,10 @@ def analysis_4_pca(deltas, n_layers, target_layers=None):
 
     if target_layers is None:
         target_layers = [10, 20, 30]
+    target_layers = [l for l in target_layers if l < n_layers]
+    if not target_layers:
+        print(f"  (No valid target layers for n_layers={n_layers}; skipping PCA.)")
+        return {}
 
     results = {}
     for layer in target_layers:
@@ -404,8 +417,11 @@ def analysis_5_item_level(deltas, a1_results, n_layers):
     groups = a1_results["groups"]
     group_dirs = a1_results["group_directions"]
 
-    target_layers = [10, 15, 20, 25, 30]
+    target_layers = [l for l in [10, 15, 20, 25, 30] if l < n_layers]
     results = {}
+    if not target_layers:
+        print(f"  (No valid target layers for n_layers={n_layers}; skipping item-level analysis.)")
+        return results
 
     for layer in target_layers:
         # For each item, compute projection onto its own group's direction

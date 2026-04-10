@@ -578,7 +578,12 @@ def compute_cluster_directions(deltas, n_layers: int | None = None):
 
     # Pairwise cosines between clusters
     cluster_names = list(cluster_dirs.keys())
-    for layer in [10, 15, 20, 25, 30]:
+    layers_to_show = [l for l in [10, 15, 20, 25, 30] if l < mean_dir.shape[0]]
+    dropped = [l for l in [10, 15, 20, 25, 30] if l not in layers_to_show]
+    if dropped:
+        log(f"\n  (Skipping out-of-range layers for this model: {dropped})")
+
+    for layer in layers_to_show:
         log(f"\n  Layer {layer} — cluster direction cosines:")
         for i, c1 in enumerate(cluster_names):
             for c2 in cluster_names[i + 1:]:

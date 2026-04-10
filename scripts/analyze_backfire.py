@@ -68,7 +68,10 @@ def load_all_data():
     """Load activations, behavioral results, and intervention results."""
 
     # Behavioral results
-    behav_path = sorted(BEHAVIORAL_DIR.glob("behavioral_results*.json"))[-1]
+    behav_candidates = sorted(BEHAVIORAL_DIR.glob("behavioral_results*.json"))
+    if not behav_candidates:
+        raise FileNotFoundError(f"No behavioral_results*.json found in {BEHAVIORAL_DIR}. Run behavioral_pilot.py first.")
+    behav_path = behav_candidates[-1]
     with open(behav_path) as f:
         behavioral = json.load(f)
     behav_by_idx = {r["item_idx"]: r for r in behavioral}
@@ -199,7 +202,7 @@ def experiment_4_projection(items, directions, proj_directions, n_layers):
     log("=" * 70)
 
     groups = ["gay", "lesbian", "bisexual", "pansexual"]
-    target_layers = [10, 15, 20, 25, 30]
+    target_layers = [l for l in [10, 15, 20, 25, 30] if l < n_layers]
 
     results = {}
 
@@ -665,6 +668,9 @@ def main():
 
     log("Loading data...")
     items, intervention = load_all_data()
+    if not items:
+        log(f"ERROR: No activation files found in {ACTIVATION_DIR} (expected item_*.npz).")
+        return
     n_layers = items[0]["hidden_final"].shape[0]
 
     log("Computing directions...")
