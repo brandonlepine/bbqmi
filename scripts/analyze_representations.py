@@ -462,7 +462,12 @@ def analysis_4_group_level(deltas: list[dict], n_layers: int):
                 results["groups"][group]["mean_alignment"].append(0.0)
  
     # Print summary at representative layers
-    for layer in [10, 20, 30]:
+    layers_to_show = [l for l in [10, 20, 30] if l < n_layers]
+    dropped = [l for l in [10, 20, 30] if l not in layers_to_show]
+    if dropped:
+        print(f"\n  (Skipping out-of-range layers for this model: {dropped})")
+
+    for layer in layers_to_show:
         print(f"\n  Layer {layer}:")
         for group in sorted(results["groups"].keys()):
             info = results["groups"][group]
