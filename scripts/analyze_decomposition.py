@@ -255,7 +255,7 @@ def gender_decomposition(deltas, directions, n_layers):
             results["raw_cosine_matrix"][layer] = raw_matrix
             results["decomposed_cosine_matrix"][layer] = proj_matrix
 
-        if layer in [10, 20, 30]:
+        if layer in [l for l in [10, 20, 30] if l < n_layers]:
             from sklearn.decomposition import PCA
 
             all_raw = np.stack(
@@ -547,7 +547,12 @@ def plot_decomposition(decomp_results, gender_dirs, orientation_dirs,
         log(f"  Saved decomp_5_cosine_matrix_L{layer}.png")
 
     # --- Figure 6: PCA before/after ---
-    for layer in [10, 20, 30]:
+    layers_for_pca = [l for l in [10, 20, 30] if l < n_layers]
+    dropped = [l for l in [10, 20, 30] if l not in layers_for_pca]
+    if dropped:
+        log(f"  (Skipping out-of-range PCA layers for this model: {dropped})")
+
+    for layer in layers_for_pca:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
         labels = [d["stereo_group"] for d in deltas]
 

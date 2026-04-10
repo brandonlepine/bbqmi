@@ -685,7 +685,7 @@ def analysis_5_projection(gi_items_with_hidden, trans_dir, gender_dir,
         results["proj_onto_orientation"].append(float(np.mean(orient_projs)))
         results["proj_onto_trans"].append(float(np.mean(trans_projs)))
 
-        if layer in [10, 20, 30]:
+        if layer in [l for l in [10, 20, 30] if l < n_layers]:
             log(f"  Layer {layer}: gender={np.mean(gender_projs):.2f}  "
                 f"orient={np.mean(orient_projs):.2f}  "
                 f"trans={np.mean(trans_projs):.2f}")
