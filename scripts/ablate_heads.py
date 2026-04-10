@@ -109,15 +109,22 @@ def compute_bias_scores(results):
 def validate_target_heads(model, target_heads):
     n_layers = int(model.config.num_hidden_layers)
     n_heads = int(model.config.num_attention_heads)
-    bad = []
-    for layer, head in target_heads:
-        if not (0 <= int(layer) < n_layers) or not (0 <= int(head) < n_heads):
-            bad.append((layer, head))
+    bad = [(layer, head) for layer, head in target_heads if not (0 <= int(layer) < n_layers and 0 <= int(head) < n_heads)]
     if bad:
-        raise ValueError(
-            f"Invalid (layer, head) indices: {bad}. "
+        log(
+            f"WARNING: dropping invalid (layer, head) indices for this model: {bad}. "
             f"Valid layer range: [0,{n_layers-1}], head range: [0,{n_heads-1}]."
         )
+
+
+def filter_target_heads(model, target_heads):
+    n_layers = int(model.config.num_hidden_layers)
+    n_heads = int(model.config.num_attention_heads)
+    filtered = [(int(l), int(h)) for (l, h) in target_heads if 0 <= int(l) < n_layers and 0 <= int(h) < n_heads]
+    if len(filtered) != len(target_heads):
+        dropped = [x for x in target_heads if x not in filtered]
+        log(f"WARNING: dropped {len(dropped)} invalid heads: {dropped}")
+    return filtered
 
 
 def run_with_head_ablation(model, tokenizer, items, target_heads, device, label):
@@ -147,6 +154,7 @@ def run_with_head_ablation(model, tokenizer, items, target_heads, device, label)
     that head from contributing any information.
     """
     # Group target heads by layer
+    target_heads = filter_target_heads(model, target_heads)
     validate_target_heads(model, target_heads)
     heads_by_layer = defaultdict(list)
     for layer, head in target_heads:
@@ -154,6 +162,8 @@ def run_with_head_ablation(model, tokenizer, items, target_heads, device, label)
 
     results = []
     t0 = time.time()
+    from bbqmi.model_introspection import get_decoder_layers
+    decoder_layers = get_decoder_layers(model)
 
     for i, item in enumerate(items):
         prompt = format_prompt(item)
@@ -164,7 +174,7 @@ def run_with_head_ablation(model, tokenizer, items, target_heads, device, label)
         try:
             # Register hooks that zero the o_proj input slices for specific heads.
             for layer_idx, heads in heads_by_layer.items():
-                attn_module = model.model.layers[layer_idx].self_attn
+                attn_module = decoder_layers[layer_idx].self_attn
                 if not hasattr(attn_module, "o_proj"):
                     raise RuntimeError(f"Expected layer {layer_idx}.self_attn.o_proj to exist, but it does not.")
 
@@ -241,7 +251,31 @@ def main():
     parser.add_argument("--model_path", type=Path, default=DEFAULT_MODEL_PATH)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--max_items", type=int, default=None)
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     args = parser.parse_args()
+
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir, update_run_metadata
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    global FIGURES_DIR, RESULTS_DIR
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+
+    log(f"Run: model_id={model_id}  run_date={run_date}")
+    log(f"Run dir: {run_dir}")
+    log(f"Analysis outputs: {RESULTS_DIR}")
+    log(f"Figures: {FIGURES_DIR}")
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -382,6 +416,20 @@ def main():
     log("\nGenerating figures...")
     plot_head_ablation(all_scores, FIGURES_DIR)
     log("\nDone.")
+
+    update_run_metadata(
+        run_dir=run_dir,
+        step="ablate_heads",
+        payload={
+            "model_id": model_id,
+            "run_date": run_date,
+            "model_path": str(args.model_path),
+            "device": args.device,
+            "stimuli_file": stim_candidates[-1].name if stim_candidates else None,
+            "output_json": str(save_path),
+            "figures_dir": str(FIGURES_DIR),
+        },
+    )
 
 
 def plot_head_ablation(all_scores, figures_dir):

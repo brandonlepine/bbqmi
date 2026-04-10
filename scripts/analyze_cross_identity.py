@@ -705,10 +705,42 @@ def plot_all(a1, a2, a3, a4, a5, so_deltas, gi_deltas, n_layers):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=Path, default=None, help="Optional model path to resolve model_id/run_dir.")
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     parser.add_argument("--skip_plots", action="store_true")
     args = parser.parse_args()
 
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    global SO_ACTIVATION_DIR, GI_ACTIVATION_DIR, BEHAVIORAL_DIR, FIGURES_DIR, RESULTS_DIR
+    SO_ACTIVATION_DIR = subdirs.activations_so_dir
+    GI_ACTIVATION_DIR = subdirs.activations_gi_dir
+    BEHAVIORAL_DIR = subdirs.behavioral_dir
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+
+    print(f"Run: model_id={model_id}  run_date={run_date}")
+    print(f"Run dir: {run_dir}")
+    print(f"Activations (SO): {SO_ACTIVATION_DIR}")
+    print(f"Activations (GI): {GI_ACTIVATION_DIR}")
+    print(f"Behavioral dir: {BEHAVIORAL_DIR}")
+    print(f"Analysis outputs: {RESULTS_DIR}")
+    print(f"Figures: {FIGURES_DIR}")
+
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Find behavioral results (SO only — GI doesn't have behavioral pilot)
     behavioral_candidates = sorted(BEHAVIORAL_DIR.glob("behavioral_results*.json"))

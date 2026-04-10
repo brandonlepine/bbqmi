@@ -1,8 +1,8 @@
-## Mechanistic interpretability study: bias (scaffold)
+# Mechanistic interpretability study: bias (scaffold)
 
 This repository is a lightweight, reproducible scaffold for mechanistic interpretability experiments focused on **bias** in language models (e.g., hidden-state probes, activation analysis, attribution, and group-wise comparisons).
 
-### Directory overview
+## Directory overview
 
 - **`configs/`**: Experiment configuration files (YAML).
 - **`data/`**: Input datasets (raw) and derived datasets (processed).
@@ -12,8 +12,9 @@ This repository is a lightweight, reproducible scaffold for mechanistic interpre
 - **`src/bbqmi/`**: Importable library code used by scripts.
 - **`artifacts/`**: Model-related derived artifacts (e.g., cached activations).
 - **`outputs/`**: Analysis outputs (tables/figures) intended for reporting.
+- **`results/runs/<model_id>/<run_date>/`**: Model-scoped run outputs (analysis JSON, figures, activations, behavioral pilot).
 
-### Data files included (example)
+## Data files included (example)
 
 This scaffold includes a tiny example dataset you can replace with your real data:
 
@@ -25,7 +26,7 @@ This scaffold includes a tiny example dataset you can replace with your real dat
     - **`group`**: Group membership for bias analysis (string; e.g., demographic group).
     - **`metadata_json`**: JSON-encoded string of additional metadata (string).
 
-### Scripts (inputs/outputs)
+## Scripts (inputs/outputs)
 
 - **`scripts/01_prepare_dataset.py`**
   - **Inputs**
@@ -56,7 +57,7 @@ This scaffold includes a tiny example dataset you can replace with your real dat
       - `outputs/probe_metrics_YYYY-MM-DD.json`
       - `outputs/probe_coefficients_YYYY-MM-DD.csv`
 
-### Quickstart
+## Quickstart
 
 Create an environment and install dependencies:
 
@@ -75,7 +76,7 @@ python scripts/02_extract_hidden_states.py --input_csv data/processed/dataset_pr
 python scripts/03_probe_group_signal.py --hidden_states_npz artifacts/hidden_states_$(date +%F).npz
 ```
 
-### RunPod / H100 quickstart
+## RunPod / H100 quickstart
 
 This is the minimal sequence to run on a GPU instance (e.g., H100) without installing notebook/dev tooling.
 
@@ -118,19 +119,83 @@ git clone https://github.com/nyu-mll/BBQ.git data/BBQ
 python scripts/prepare_stimuli.py
 ```
 
-- **Run the behavioral pilot**
+- **(Optional) Download models from Hugging Face**
 
 ```bash
-python scripts/behavioral_pilot.py --device cuda --model_path /path/to/llama2-13b
+python scripts/download_models.py --help
 ```
 
-- **Run the decomposition/ablation analysis**
+- **Run the behavioral pilot (writes into a model-scoped run dir)**
 
 ```bash
-python scripts/analyze_decomposition.py --ablation_only --device cuda --model_path /path/to/llama2-13b --alpha 14.0
+python scripts/behavioral_pilot.py \
+  --device cuda \
+  --model_path /workspace/bbqmi/models/llama2-13b \
+  --model_id llama2-13b
 ```
 
-### Notes / conventions
+- **Extract activations (writes into the same run dir)**
+
+```bash
+python scripts/extract_activations.py \
+  --device cuda \
+  --model_path /workspace/bbqmi/models/llama2-13b \
+  --model_id llama2-13b \
+  --stimuli stimuli_so.json \
+  --output_subdir so
+```
+
+- **One-command end-to-end run (recommended)**
+
+This runs: `prepare_stimuli.py` → `behavioral_pilot.py` → `extract_activations.py` → analyses (and optional GI).
+
+```bash
+python scripts/run_pipeline.py \
+  --device cuda \
+  --model_path /workspace/bbqmi/models/llama2-13b \
+  --model_id llama2-13b \
+  --include_gi
+```
+
+- **Run the decomposition/ablation analysis (reads/writes in the same run dir)**
+
+```bash
+python scripts/analyze_decomposition.py \
+  --ablation_only \
+  --device cuda \
+  --model_path /workspace/bbqmi/models/llama2-13b \
+  --model_id llama2-13b \
+  --alpha 14.0
+```
+
+## Notes / conventions
 
 - Output file names created by scripts include the run date suffix `YYYY-MM-DD`.
 - `data/`, `artifacts/`, and `outputs/` contents are ignored by git (folders are tracked).
+
+## Run directories (model-scoped outputs)
+
+Most BBQ scripts now read/write inside a **model-scoped run directory**:
+
+- **Default run dir**: `results/runs/<model_id>/<run_date>/`
+- **Subdirectories**:
+  - `activations/so/` and `activations/gi/` (plus `manifest.json`)
+  - `behavioral_pilot/`
+  - `analysis/`
+  - `figures/`
+
+Scripts accept:
+
+- **`--model_id`**: used to separate outputs across models (defaults to `model_path.name`)
+- **`--run_date`**: defaults to today; if that folder doesn’t exist yet, scripts fall back to the newest existing run for that `model_id`
+- **`--run_dir`**: explicit override (useful for resuming a specific run)
+
+## Multi-model runs (example)
+
+```bash
+for mid in llama2-13b llama2-7b; do
+  python scripts/behavioral_pilot.py --device cuda --model_path "/workspace/bbqmi/models/$mid" --model_id "$mid"
+  python scripts/extract_activations.py --device cuda --model_path "/workspace/bbqmi/models/$mid" --model_id "$mid" --stimuli stimuli_so.json --output_subdir so
+  python scripts/analyze_decomposition.py --ablation_only --device cuda --model_path "/workspace/bbqmi/models/$mid" --model_id "$mid" --alpha 14.0
+done
+```

@@ -313,22 +313,23 @@ def run_inference(model, tokenizer, items, device, label,
     results = []
     t0 = time.time()
 
-    def _validate_hook_heads(hs):
+    def _filter_hook_heads(hs):
         if not hs:
-            return
+            return None
         n_layers_local = int(model.config.num_hidden_layers)
         n_heads_local = int(model.config.num_attention_heads)
-        bad = []
-        for layer, head in hs:
-            if not (0 <= int(layer) < n_layers_local) or not (0 <= int(head) < n_heads_local):
-                bad.append((layer, head))
-        if bad:
-            raise ValueError(
-                f"Invalid (layer, head) indices: {bad}. "
+        filtered = [(int(l), int(h)) for (l, h) in hs if 0 <= int(l) < n_layers_local and 0 <= int(h) < n_heads_local]
+        if len(filtered) != len(hs):
+            dropped = [x for x in hs if (int(x[0]), int(x[1])) not in filtered]
+            log(
+                f"WARNING: dropped {len(dropped)} invalid hook_heads for this model: {dropped}. "
                 f"Valid layer range: [0,{n_layers_local-1}], head range: [0,{n_heads_local-1}]."
             )
+        return filtered
 
-    _validate_hook_heads(hook_heads)
+    hook_heads = _filter_hook_heads(hook_heads)
+    from bbqmi.model_introspection import get_decoder_layers
+    decoder_layers = get_decoder_layers(model)
 
     for i, item in enumerate(items):
         prompt = format_prompt(item)
@@ -340,8 +341,11 @@ def run_inference(model, tokenizer, items, device, label,
         try:
             # Direction ablation hook
             if hook_fn_factory and hook_layer is not None:
-                hook = model.model.layers[hook_layer].register_forward_hook(hook_fn_factory())
-                hooks.append(hook)
+                if 0 <= int(hook_layer) < len(decoder_layers):
+                    hook = decoder_layers[int(hook_layer)].register_forward_hook(hook_fn_factory())
+                    hooks.append(hook)
+                else:
+                    log(f"WARNING: hook_layer={hook_layer} out of range for this model; skipping direction hook.")
 
             # Head ablation hooks (o_proj pre-hook: zero the per-head slice before projection)
             if hook_heads:
@@ -356,7 +360,7 @@ def run_inference(model, tokenizer, items, device, label,
                 head_dim = hidden_size // n_heads
 
                 for layer_idx, heads in heads_by_layer.items():
-                    attn = model.model.layers[layer_idx].self_attn
+                    attn = decoder_layers[layer_idx].self_attn
                     if not hasattr(attn, "o_proj"):
                         raise RuntimeError(f"Expected layer {layer_idx}.self_attn.o_proj to exist, but it does not.")
 
@@ -838,10 +842,39 @@ def main():
     parser.add_argument("--alpha", type=float, default=14.0)
     parser.add_argument("--target_layer", type=int, default=15)  # Earlier layer based on layer sweep
     parser.add_argument("--max_items", type=int, default=None)
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     parser.add_argument("--analysis", type=str, default="all",
                         choices=["all", "representational_only", "behavioral_only",
                                  "cross_domain_only", "circuit_only"])
     args = parser.parse_args()
+
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir, update_run_metadata
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    # compatNo: default to run-scoped outputs/inputs
+    global SO_ACTIVATION_DIR, GI_ACTIVATION_DIR, FIGURES_DIR, RESULTS_DIR
+    SO_ACTIVATION_DIR = subdirs.activations_so_dir
+    GI_ACTIVATION_DIR = subdirs.activations_gi_dir
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+
+    log(f"Run: model_id={model_id}  run_date={run_date}")
+    log(f"Run dir: {run_dir}")
+    log(f"Activations (SO): {SO_ACTIVATION_DIR}")
+    log(f"Activations (GI): {GI_ACTIVATION_DIR}")
+    log(f"Analysis outputs: {RESULTS_DIR}")
+    log(f"Figures: {FIGURES_DIR}")
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -882,6 +915,11 @@ def main():
             json.dump({"analysis_1": a1_results, "analysis_5": a5_results},
                       f, indent=2)
         log("Saved gi_representational_results.json")
+        update_run_metadata(
+            run_dir=run_dir,
+            step="gi_representational",
+            payload={"model_id": model_id, "run_date": run_date, "output_json": str(RESULTS_DIR / "gi_representational_results.json")},
+        )
 
     # ---- Load model for causal analyses ----
     cross_domain_scores = None
@@ -891,12 +929,29 @@ def main():
                    ["behavioral_only", "cross_domain_only", "circuit_only"])
 
     if needs_model:
-        # Load stimuli
-        so_stim = sorted(DATA_DIR.glob("stimuli_so*.json"))
-        gi_stim = sorted(DATA_DIR.glob("stimuli_gi*.json"))
-        with open(so_stim[-1]) as f:
+        # Load stimuli (prefer manifests from this run's activations)
+        def _stimuli_from_manifest(act_dir: Path, pattern: str) -> Path:
+            mp = act_dir / "manifest.json"
+            if mp.exists():
+                try:
+                    mf = json.loads(mp.read_text(encoding="utf-8"))
+                    name = mf.get("stimuli_file")
+                    if name:
+                        p = DATA_DIR / name
+                        if p.exists():
+                            return p
+                except Exception:
+                    pass
+            cands = sorted(DATA_DIR.glob(pattern))
+            if not cands:
+                raise FileNotFoundError(f"No {pattern} found in {DATA_DIR}")
+            return cands[-1]
+
+        so_path = _stimuli_from_manifest(SO_ACTIVATION_DIR, "stimuli_so*.json")
+        gi_path = _stimuli_from_manifest(GI_ACTIVATION_DIR, "stimuli_gi*.json")
+        with open(so_path, encoding="utf-8") as f:
             so_items = json.load(f)
-        with open(gi_stim[-1]) as f:
+        with open(gi_path, encoding="utf-8") as f:
             gi_items = json.load(f)
 
         if args.max_items:

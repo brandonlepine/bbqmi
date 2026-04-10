@@ -88,10 +88,26 @@ def project_out(vector, direction):
 # ===========================================================================
 def load_stimuli():
     """Load stimuli with identity token position detection."""
-    stim_candidates = sorted(DATA_DIR.glob("stimuli_so*.json"))
-    with open(stim_candidates[-1]) as f:
+    stimuli_path = None
+    manifest_path = ACTIVATION_DIR / "manifest.json"
+    if manifest_path.exists():
+        try:
+            mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stim_name = mf.get("stimuli_file")
+            if stim_name:
+                stimuli_path = DATA_DIR / stim_name
+        except Exception:
+            stimuli_path = None
+
+    if stimuli_path is None or not stimuli_path.exists():
+        stim_candidates = sorted(DATA_DIR.glob("stimuli_so*.json"))
+        if not stim_candidates:
+            raise FileNotFoundError(f"No stimuli_so*.json found in {DATA_DIR}")
+        stimuli_path = stim_candidates[-1]
+
+    with open(stimuli_path, encoding="utf-8") as f:
         items = json.load(f)
-    log(f"Loaded {len(items)} stimuli")
+    log(f"Loaded {len(items)} stimuli from {stimuli_path.name}")
     return items
 
 
@@ -401,6 +417,12 @@ def extract_answer(logits, tokenizer):
 def run_identity_token_ablation(model, tokenizer, items, direction_np, alpha,
                                  target_layer, device, label):
     """Ablate direction ONLY at identity token positions."""
+    from bbqmi.model_introspection import get_decoder_layers
+    decoder_layers = get_decoder_layers(model)
+    if target_layer >= len(decoder_layers):
+        log(f"WARNING: target_layer={target_layer} out of range for this model (n_layers={len(decoder_layers)}); clamping.")
+        target_layer = max(0, len(decoder_layers) - 1)
+
     direction_tensor = torch.tensor(
         direction_np[target_layer], dtype=torch.float16
     ).to(device)
@@ -445,7 +467,7 @@ def run_identity_token_ablation(model, tokenizer, items, direction_np, alpha,
                     hidden.sub_(alpha * direction_tensor.unsqueeze(0) * mask)
             return output
 
-        hook = model.model.layers[target_layer].register_forward_hook(hook_fn)
+        hook = decoder_layers[target_layer].register_forward_hook(hook_fn)
         with torch.no_grad():
             outputs = model(**inputs)
             logits = outputs.logits[0, -1, :]
@@ -769,6 +791,15 @@ def run_layer_sweep(model, tokenizer, items, proj_directions, alpha, device,
     if layers is None:
         layers = [5, 10, 15, 20, 25, 30, 35]
 
+    n_layers_model = int(getattr(model.config, "num_hidden_layers", 0) or 0)
+    if n_layers_model:
+        kept = [l for l in layers if l < n_layers_model]
+        dropped = [l for l in layers if l not in kept]
+        if dropped:
+            log(f"WARNING: dropping out-of-range layers for sweep (n_layers={n_layers_model}): {dropped}")
+        layers = kept
+    baseline_layer = min(20, max(0, (n_layers_model - 1) if n_layers_model else 20))
+
     all_scores = {}
     save_path = RESULTS_DIR / "layer_sweep_results.json"
 
@@ -776,7 +807,7 @@ def run_layer_sweep(model, tokenizer, items, proj_directions, alpha, device,
     log("\n  Running baseline...")
     baseline = run_identity_token_ablation(
         model, tokenizer, items, proj_directions["gay"],
-        alpha=0.0, target_layer=20, device=device, label="baseline",
+        alpha=0.0, target_layer=baseline_layer, device=device, label="baseline",
     )
     all_scores["baseline"] = compute_bias_scores(baseline)
 
@@ -986,11 +1017,39 @@ def main():
     parser.add_argument("--target_layer", type=int, default=20)
     parser.add_argument("--max_items", type=int, default=None)
     parser.add_argument("--attn_max_items", type=int, default=200)
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     parser.add_argument("--analysis", type=str, default="all",
                         choices=["all", "ablation_only", "sign_flip_only",
                                  "cluster_only", "attention_only",
                                  "layer_sweep_only"])
     args = parser.parse_args()
+
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir, update_run_metadata
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    # compatNo: default to run-scoped outputs/inputs
+    global ACTIVATION_DIR, BEHAVIORAL_DIR, FIGURES_DIR, RESULTS_DIR
+    ACTIVATION_DIR = subdirs.activations_so_dir
+    BEHAVIORAL_DIR = subdirs.behavioral_dir
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+
+    log(f"Run: model_id={model_id}  run_date={run_date}")
+    log(f"Run dir: {run_dir}")
+    log(f"Activations (SO): {ACTIVATION_DIR}")
+    log(f"Analysis outputs: {RESULTS_DIR}")
+    log(f"Figures: {FIGURES_DIR}")
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1058,6 +1117,11 @@ def main():
         with open(RESULTS_DIR / "attention_analysis.json", "w") as f:
             json.dump(attn_results, f, indent=2)
         log("Saved attention_analysis.json")
+        update_run_metadata(
+            run_dir=run_dir,
+            step="causal_attention_only",
+            payload={"model_id": model_id, "run_date": run_date, "output_json": str(RESULTS_DIR / "attention_analysis.json")},
+        )
 
     # --- Analysis 5: Layer sweep ---
     if run_all or args.analysis == "layer_sweep_only":

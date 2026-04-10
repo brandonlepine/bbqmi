@@ -382,6 +382,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare BBQ stimuli")
     parser.add_argument("--bbq_dir", type=Path, default=BBQ_DIR, help="Path to BBQ data/ directory")
     parser.add_argument("--output_dir", type=Path, default=OUTPUT_DIR)
+    parser.add_argument(
+        "--run_date",
+        type=str,
+        default=None,
+        help="Date suffix for output files (YYYY-MM-DD). Defaults to today.",
+    )
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -403,7 +409,7 @@ def main() -> None:
     print(summary_so)
     print(summary_gi)
 
-    date_suffix = today_yyyy_mm_dd()
+    date_suffix = args.run_date or today_yyyy_mm_dd()
     so_path = args.output_dir / f"stimuli_so_{date_suffix}.json"
     gi_path = args.output_dir / f"stimuli_gi_{date_suffix}.json"
     summary_path = args.output_dir / f"stimuli_summary_{date_suffix}.txt"

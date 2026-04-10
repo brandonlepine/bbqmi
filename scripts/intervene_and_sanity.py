@@ -130,7 +130,7 @@ def load_so_deltas():
     return deltas
 
 
-def sanity_check(deltas, n_layers=40):
+def sanity_check(deltas):
     """Check that group-specific directions are stable across contrast partners."""
     print("\n" + "=" * 60)
     print("  SANITY CHECK: Contrast-term stability")
@@ -138,7 +138,10 @@ def sanity_check(deltas, n_layers=40):
 
     # For each stereotyped group, split by contrast term
     groups = ["gay", "lesbian", "bisexual", "pansexual"]
-    target_layers = [10, 15, 20, 25, 30]
+    n_layers = int(deltas[0]["delta_normed"].shape[0]) if deltas else 0
+    target_layers = [l for l in [10, 15, 20, 25, 30] if l < n_layers]
+    if not target_layers:
+        print(f"WARNING: no valid target_layers for n_layers={n_layers}; skipping layer-specific sanity outputs.")
 
     results = {}
 
@@ -306,7 +309,12 @@ def run_intervention(model, tokenizer, items, steering_dir, alpha, target_layer,
             return output# Return original output; hidden was modified in-place
  
         # Use register_forward_hook with the layer
-        layer_module = model.model.layers[target_layer]
+        from bbqmi.model_introspection import get_decoder_layers
+        decoder_layers = get_decoder_layers(model)
+        if target_layer >= len(decoder_layers):
+            print(f"WARNING: target_layer={target_layer} out of range (n_layers={len(decoder_layers)}); clamping.")
+            target_layer = max(0, len(decoder_layers) - 1)
+        layer_module = decoder_layers[target_layer]
         hook = layer_module.register_forward_hook(hook_fn)
  
         with torch.no_grad():
@@ -486,9 +494,38 @@ def main():
     parser.add_argument("--target_layer", type=int, default=20,
                         help="Layer at which to intervene")
     parser.add_argument("--max_items", type=int, default=None)
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     args = parser.parse_args()
 
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir, update_run_metadata
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    global ACTIVATION_DIR, GI_ACTIVATION_DIR, BEHAVIORAL_DIR, FIGURES_DIR, RESULTS_DIR
+    ACTIVATION_DIR = subdirs.activations_so_dir
+    GI_ACTIVATION_DIR = subdirs.activations_gi_dir
+    BEHAVIORAL_DIR = subdirs.behavioral_dir
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+
+    print(f"Run: model_id={model_id}  run_date={run_date}")
+    print(f"Run dir: {run_dir}")
+    print(f"Activations (SO): {ACTIVATION_DIR}")
+    print(f"Analysis outputs: {RESULTS_DIR}")
+    print(f"Figures: {FIGURES_DIR}")
+
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---- Part 1: Sanity check ----
     print("Loading SO deltas for sanity check...")
@@ -500,6 +537,11 @@ def main():
     with open(RESULTS_DIR / "sanity_check_results.json", "w") as f:
         json.dump(sanity_results, f, indent=2)
     print("Saved sanity_check_results.json")
+    update_run_metadata(
+        run_dir=run_dir,
+        step="sanity_check",
+        payload={"model_id": model_id, "run_date": run_date, "output_json": str(RESULTS_DIR / "sanity_check_results.json")},
+    )
 
     if args.sanity_only:
         print("\n--sanity_only flag set, skipping intervention.")
@@ -511,12 +553,25 @@ def main():
     print("=" * 60)
 
     # Compute steering directions
-    directions = compute_steering_directions(deltas, n_layers=40)
+    n_layers = deltas[0]["delta_normed"].shape[0]
+    directions = compute_steering_directions(deltas, n_layers=n_layers)
     print(f"Computed steering directions: {list(directions.keys())}")
 
     # Load stimuli
-    stim_candidates = sorted(DATA_DIR.glob("stimuli_so*.json"))
-    with open(stim_candidates[-1]) as f:
+    stimuli_path = None
+    manifest_path = ACTIVATION_DIR / "manifest.json"
+    if manifest_path.exists():
+        try:
+            mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stim_name = mf.get("stimuli_file")
+            if stim_name:
+                stimuli_path = DATA_DIR / stim_name
+        except Exception:
+            stimuli_path = None
+    if stimuli_path is None or not stimuli_path.exists():
+        stim_candidates = sorted(DATA_DIR.glob("stimuli_so*.json"))
+        stimuli_path = stim_candidates[-1]
+    with open(stimuli_path, encoding="utf-8") as f:
         items = json.load(f)
     print(f"Loaded {len(items)} stimuli")
 

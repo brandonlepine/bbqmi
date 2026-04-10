@@ -352,6 +352,8 @@ def run_single_ablation(model, tokenizer, items, direction_np, alpha,
 
     results = []
     t0 = time.time()
+    from bbqmi.model_introspection import get_decoder_layers
+    decoder_layers = get_decoder_layers(model)
 
     for i, item in enumerate(items):
         prompt = format_prompt(item)
@@ -365,7 +367,7 @@ def run_single_ablation(model, tokenizer, items, direction_np, alpha,
                 output[0].sub_(alpha * direction_tensor.unsqueeze(0))
             return output
 
-        hook = model.model.layers[target_layer].register_forward_hook(hook_fn)
+        hook = decoder_layers[target_layer].register_forward_hook(hook_fn)
 
         with torch.no_grad():
             outputs = model(**inputs)
@@ -777,9 +779,38 @@ def main():
     parser.add_argument("--alpha", type=float, default=14.0)
     parser.add_argument("--target_layer", type=int, default=20)
     parser.add_argument("--max_items", type=int, default=None)
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     args = parser.parse_args()
 
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir, update_run_metadata
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    # compatNo: default to run-scoped outputs/inputs
+    global ACTIVATION_DIR, BEHAVIORAL_DIR, FIGURES_DIR, RESULTS_DIR
+    ACTIVATION_DIR = subdirs.activations_so_dir
+    BEHAVIORAL_DIR = subdirs.behavioral_dir
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+
+    log(f"Run: model_id={model_id}  run_date={run_date}")
+    log(f"Run dir: {run_dir}")
+    log(f"Activations (SO): {ACTIVATION_DIR}")
+    log(f"Analysis outputs: {RESULTS_DIR}")
+    log(f"Figures: {FIGURES_DIR}")
+
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load data
     log("Loading SO deltas...")
@@ -805,6 +836,11 @@ def main():
                 f, indent=2, default=str,
             )
         log("\nSaved decomposition_results.json")
+        update_run_metadata(
+            run_dir=run_dir,
+            step="analyze_decomposition_decomp",
+            payload={"model_id": model_id, "run_date": run_date, "output_json": str(RESULTS_DIR / "decomposition_results.json")},
+        )
 
         log("\nGenerating decomposition figures...")
         plot_decomposition(
@@ -823,7 +859,7 @@ def main():
         )
 
         # Verify gay_proj ≈ lesbian_proj
-        for layer in [10, 20, 30]:
+        for layer in [l for l in [10, 20, 30] if l < n_layers]:
             cos = cosine_sim(
                 proj_directions["gay"][layer],
                 proj_directions["lesbian"][layer],
@@ -831,8 +867,20 @@ def main():
             log(f"  Layer {layer}: cos(gay_proj, lesbian_proj) = {cos:.3f}")
 
         # Load stimuli
-        stim_candidates = sorted(DATA_DIR.glob("stimuli_so*.json"))
-        with open(stim_candidates[-1]) as f:
+        stimuli_path = None
+        manifest_path = ACTIVATION_DIR / "manifest.json"
+        if manifest_path.exists():
+            try:
+                mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+                stim_name = mf.get("stimuli_file")
+                if stim_name:
+                    stimuli_path = DATA_DIR / stim_name
+            except Exception:
+                stimuli_path = None
+        if stimuli_path is None or not stimuli_path.exists():
+            stim_candidates = sorted(DATA_DIR.glob("stimuli_so*.json"))
+            stimuli_path = stim_candidates[-1]
+        with open(stimuli_path, encoding="utf-8") as f:
             items = json.load(f)
         log(f"\nLoaded {len(items)} stimuli")
 
@@ -853,6 +901,10 @@ def main():
             dtype=torch.float16,
         ).to(args.device)
         model.eval()
+        n_layers_model = int(getattr(model.config, "num_hidden_layers", n_layers))
+        if args.target_layer >= n_layers_model:
+            log(f"WARNING: target_layer={args.target_layer} out of range for this model (n_layers={n_layers_model}); clamping.")
+            args.target_layer = max(0, n_layers_model - 1)
         log(f"Model loaded. Intervening at layer {args.target_layer}, alpha={args.alpha}")
 
         all_scores = {}

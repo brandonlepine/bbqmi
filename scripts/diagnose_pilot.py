@@ -19,7 +19,6 @@ from pathlib import Path
 from collections import Counter, defaultdict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RESULTS_DIR = PROJECT_ROOT / "results" / "behavioral_pilot"
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 
 
@@ -30,34 +29,65 @@ def newest_file(dir_path: Path, pattern: str) -> Path | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Diagnose behavioral pilot results.")
+    parser.add_argument("--model_path", type=Path, default=None, help="Optional model path to resolve model_id/run_dir.")
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     parser.add_argument(
         "--results_json",
         type=Path,
         default=None,
-        help="Path to behavioral_results_YYYY-MM-DD.json; defaults to newest in results/behavioral_pilot/.",
+        help="Path to behavioral_results.json; defaults to newest in run_dir/behavioral_pilot/.",
     )
     parser.add_argument(
         "--stimuli_json",
         type=Path,
         default=None,
-        help="Path to stimuli_so_YYYY-MM-DD.json; defaults to newest in data/processed/.",
+        help="Path to stimuli_so_YYYY-MM-DD.json; defaults to run metadata or newest in data/processed/.",
     )
     args = parser.parse_args()
 
-    # Load results
-    results_path = args.results_json or newest_file(RESULTS_DIR, "behavioral_results_*.json") or (
-        RESULTS_DIR / "behavioral_results.json"
+    from bbqmi.run_paths import resolve_run_dir
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
     )
+    behavioral_dir = run_dir / "behavioral_pilot"
+
+    # Load results
+    results_path = args.results_json or (behavioral_dir / "behavioral_results.json")
     if not results_path.exists():
         raise FileNotFoundError(
-            f"Could not find results JSON. Looked for newest behavioral_results_*.json in {RESULTS_DIR} "
-            f"and also {RESULTS_DIR/'behavioral_results.json'}."
+            f"Could not find results JSON at {results_path}. "
+            f"Pass --results_json or set --run_dir/--model_id to a completed run."
         )
     with open(results_path, encoding="utf-8") as f:
         results = json.load(f)
 
     # Load stimuli for additional context
-    stimuli_path = args.stimuli_json or newest_file(DATA_DIR, "stimuli_so_*.json") or (DATA_DIR / "stimuli_so.json")
+    stimuli_path = args.stimuli_json
+    if stimuli_path is None:
+        # Try to read from run metadata first
+        meta_path = run_dir / "metadata.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                stim_name = (
+                    meta.get("steps", {})
+                    .get("behavioral_pilot", {})
+                    .get("stimuli_file")
+                )
+                if stim_name:
+                    stimuli_path = DATA_DIR / stim_name
+            except Exception:
+                stimuli_path = None
+    if stimuli_path is None:
+        stimuli_path = newest_file(DATA_DIR, "stimuli_so_*.json") or (DATA_DIR / "stimuli_so.json")
     if not stimuli_path.exists():
         raise FileNotFoundError(
             f"Could not find stimuli JSON. Looked for newest stimuli_so_*.json in {DATA_DIR} "
@@ -71,6 +101,8 @@ def main():
 
     print("=" * 70)
     print("  Behavioral pilot diagnostics")
+    print(f"  model_id: {model_id}  run_date: {run_date}")
+    print(f"  run_dir: {run_dir}")
     print(f"  Results: {results_path.name}")
     print(f"  Stimuli: {stimuli_path.name}")
     print("=" * 70)
@@ -133,25 +165,35 @@ def main():
     for mode, n in ambig_error_roles.most_common():
         print(f"   Selected {mode:25s}: {n:3d} ({n/len(ambig_errors):.1%})")
 
-    # --- 6. Logprob confidence on errors ---
+    # --- 6. Confidence analysis (disambig) ---
     print("\n6. CONFIDENCE ANALYSIS (disambig):")
     correct_items = [r for r in disambig if r["correct"]]
     error_items = [r for r in disambig if not r["correct"]]
 
-    def mean_max_prob(items):
-        return sum(max(r["probs"].values()) for r in items) / len(items) if items else 0
+    # Newer behavioral_pilot stores per-letter mean logprob scores under answer_scores.
+    has_answer_scores = bool(disambig and isinstance(disambig[0].get("answer_scores"), dict))
+    if has_answer_scores:
+        def mean_max_score(items):
+            vals = []
+            for r in items:
+                scores = [v.get("score", float("-inf")) for v in r["answer_scores"].values()]
+                vals.append(max(scores))
+            return sum(vals) / len(vals) if vals else float("nan")
 
-    def mean_margin(items):
-        margins = []
-        for r in items:
-            sorted_probs = sorted(r["probs"].values(), reverse=True)
-            margins.append(sorted_probs[0] - sorted_probs[1])
-        return sum(margins) / len(margins) if margins else 0
+        def mean_margin_score(items):
+            vals = []
+            for r in items:
+                scores = sorted([v.get("score", float("-inf")) for v in r["answer_scores"].values()], reverse=True)
+                if len(scores) >= 2:
+                    vals.append(scores[0] - scores[1])
+            return sum(vals) / len(vals) if vals else float("nan")
 
-    print(f"   Correct items: mean max prob = {mean_max_prob(correct_items):.3f}, "
-          f"mean margin = {mean_margin(correct_items):.3f}")
-    print(f"   Error items:   mean max prob = {mean_max_prob(error_items):.3f}, "
-          f"mean margin = {mean_margin(error_items):.3f}")
+        print(f"   Correct items: mean max score = {mean_max_score(correct_items):.3f}, "
+              f"mean margin = {mean_margin_score(correct_items):.3f}")
+        print(f"   Error items:   mean max score = {mean_max_score(error_items):.3f}, "
+              f"mean margin = {mean_margin_score(error_items):.3f}")
+    else:
+        print("   (No per-option scores found in results; skipping confidence analysis.)")
 
     # --- 7. Sample errors ---
     print("\n7. SAMPLE DISAMBIG ERRORS (first 10):")

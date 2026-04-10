@@ -37,7 +37,6 @@ import torch
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
-ACTIVATION_DIR = PROJECT_ROOT / "results" / "activations"
 DEFAULT_MODEL_PATH = Path(
     "/Users/brandonlepine/Repositories/Research_Repositories/smi/models/llama2-13b"
 )
@@ -113,7 +112,12 @@ def load_model(model_path: Path, device: str):
     hidden_dim = config.hidden_size
     print(f"Model: {n_layers} layers, hidden_dim={hidden_dim}, dtype={model.dtype}")
 
-    return model, tokenizer, n_layers, hidden_dim
+    max_pos = getattr(config, "max_position_embeddings", None)
+    # Keep a conservative ceiling at 2048 to match the original pipeline defaults,
+    # but avoid requesting longer contexts than the model supports.
+    max_length_default = min(2048, int(max_pos)) if max_pos else 2048
+
+    return model, tokenizer, n_layers, hidden_dim, max_length_default
 
 
 def flush_mps():
@@ -256,7 +260,7 @@ def find_identity_token_positions(prompt: str, tokenizer) -> dict:
 # Activation extraction
 # ---------------------------------------------------------------------------
 def extract_activations(model, tokenizer, item: dict, device: str,
-                        n_layers: int, hidden_dim: int) -> dict:
+                        n_layers: int, hidden_dim: int, max_length: int) -> dict:
     """Extract residual stream activations for a single item.
 
     Returns dict ready to save as .npz.
@@ -271,7 +275,7 @@ def extract_activations(model, tokenizer, item: dict, device: str,
         prompt,
         return_tensors="pt",
         truncation=True,
-        max_length=2048,
+        max_length=max_length,
     ).to(device)
 
     seq_len = inputs["input_ids"].shape[1]
@@ -369,15 +373,33 @@ def main():
     parser.add_argument("--model_path", type=Path, default=DEFAULT_MODEL_PATH)
     parser.add_argument("--device", type=str, default="mps",
                         choices=["mps", "cuda", "cpu", "auto"])
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to today.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     parser.add_argument("--max_items", type=int, default=None)
     parser.add_argument("--stimuli", type=str, default="stimuli_so.json",
                         help="Which stimuli file to use (in data/processed/)")
     parser.add_argument("--output_subdir", type=str, default="so",
-                        help="Subdirectory within results/activations/")
+                        help="Subdirectory within run_dir/activations/ (e.g. so or gi).")
     args = parser.parse_args()
 
-    output_dir = ACTIVATION_DIR / args.output_subdir
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir, update_run_metadata
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+    output_dir = subdirs.activations_dir / args.output_subdir
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Run: model_id={model_id}  run_date={run_date}")
+    print(f"Run dir: {run_dir}")
+    print(f"Activations dir: {output_dir}")
 
     # Load stimuli
     stimuli_path = DATA_DIR / args.stimuli
@@ -413,7 +435,8 @@ def main():
         print(f"Found {len(existing)} already-extracted items, skipping those")
 
     # Load model
-    model, tokenizer, n_layers, hidden_dim = load_model(args.model_path, args.device)
+    model, tokenizer, n_layers, hidden_dim, max_length_default = load_model(args.model_path, args.device)
+    print(f"Tokenizer max_length: {max_length_default}")
 
     # Track identity detection stats
     items_without_identity = 0
@@ -431,7 +454,7 @@ def main():
 
         # Extract
         result = extract_activations(
-            model, tokenizer, item, args.device, n_layers, hidden_dim
+            model, tokenizer, item, args.device, n_layers, hidden_dim, max_length_default
         )
 
         # Track stats
@@ -484,6 +507,8 @@ def main():
         "n_layers": n_layers,
         "hidden_dim": hidden_dim,
         "model_path": str(args.model_path),
+        "model_id": model_id,
+        "run_date": run_date,
         "items_without_identity": items_without_identity,
         "output_dir": str(output_dir),
         "extraction_arrays": {
@@ -496,6 +521,23 @@ def main():
     with open(output_dir / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
     print(f"Saved manifest to {output_dir / 'manifest.json'}")
+
+    update_run_metadata(
+        run_dir=run_dir,
+        step="extract_activations",
+        payload={
+            "model_id": model_id,
+            "run_date": run_date,
+            "model_path": str(args.model_path),
+            "device": args.device,
+            "stimuli_file": stimuli_path.name,
+            "output_subdir": args.output_subdir,
+            "output_dir": str(output_dir),
+            "n_layers": int(n_layers),
+            "hidden_dim": int(hidden_dim),
+            "max_length": int(max_length_default),
+        },
+    )
 
 
 if __name__ == "__main__":

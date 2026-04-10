@@ -10,27 +10,40 @@ Usage:
   python scripts/debug_hook.py
 """
  
-import torch
-import numpy as np
+import argparse
 from pathlib import Path
+
+import torch
  
-MODEL_PATH = Path("/Users/brandonlepine/Repositories/Research_Repositories/smi/models/llama2-13b")
+DEFAULT_MODEL_PATH = Path("/Users/brandonlepine/Repositories/Research_Repositories/smi/models/llama2-13b")
  
 def main():
     from transformers import AutoModelForCausalLM, AutoTokenizer
+    from bbqmi.model_introspection import get_decoder_layers, get_hidden_size
  
-    print("Loading model...")
-    tokenizer = AutoTokenizer.from_pretrained(str(MODEL_PATH))
-    model = AutoModelForCausalLM.from_pretrained(
-        str(MODEL_PATH), torch_dtype=torch.float16
-    ).to("mps")
+    p = argparse.ArgumentParser(description="Verify forward hooks modify decoder layer outputs.")
+    p.add_argument("--model_path", type=Path, default=DEFAULT_MODEL_PATH)
+    p.add_argument("--device", type=str, default="mps", choices=["mps", "cuda", "cpu"])
+    p.add_argument("--target_layer", type=int, default=20)
+    p.add_argument("--scale", type=float, default=4.0)
+    cli = p.parse_args()
+
+    print(f"Loading model from {cli.model_path}...")
+    tokenizer = AutoTokenizer.from_pretrained(str(cli.model_path))
+    model = AutoModelForCausalLM.from_pretrained(str(cli.model_path), torch_dtype=torch.float16).to(cli.device)
     model.eval()
+    decoder_layers = get_decoder_layers(model)
+    hidden_size = get_hidden_size(model)
  
     prompt = "The capital of France is"
-    inputs = tokenizer(prompt, return_tensors="pt").to("mps")
+    inputs = tokenizer(prompt, return_tensors="pt").to(cli.device)
  
-    target_layer = 20
-    direction = torch.randn(5120, dtype=torch.float16, device="mps")
+    target_layer = cli.target_layer
+    if target_layer >= len(decoder_layers) - 1:
+        print(f"WARNING: target_layer={target_layer} too high for n_layers={len(decoder_layers)}; clamping.")
+        target_layer = max(0, len(decoder_layers) - 2)
+
+    direction = torch.randn(hidden_size, dtype=torch.float16, device=cli.device)
     direction = direction / direction.norm()
  
     # --- Run 1: Clean (no hook) ---
@@ -43,12 +56,12 @@ def main():
     def hook_a(module, args, output):
         call_count_a[0] += 1
         if isinstance(output, tuple):
-            output[0].sub_(4.0 * direction.unsqueeze(0))
+            output[0].sub_(cli.scale * direction.unsqueeze(0))
         elif hasattr(output, '__getitem__'):
-            output[0].sub_(4.0 * direction.unsqueeze(0))
+            output[0].sub_(cli.scale * direction.unsqueeze(0))
         return output
  
-    h = model.model.layers[target_layer].register_forward_hook(hook_a)
+    h = decoder_layers[target_layer].register_forward_hook(hook_a)
     with torch.no_grad():
         out_a = model(**inputs)
         logits_a = out_a.logits[0, -1, :].clone()
@@ -65,11 +78,11 @@ def main():
     def hook_b(module, args, output):
         call_count_b[0] += 1
         if isinstance(output, tuple):
-            hidden = output[0] - 4.0 * direction.unsqueeze(0)
+            hidden = output[0] - cli.scale * direction.unsqueeze(0)
             return (hidden,) + output[1:]
         return output
  
-    h = model.model.layers[target_layer].register_forward_hook(hook_b)
+    h = decoder_layers[target_layer].register_forward_hook(hook_b)
     with torch.no_grad():
         out_b = model(**inputs)
         logits_b = out_b.logits[0, -1, :].clone()
@@ -88,11 +101,11 @@ def main():
         # args[0] is the hidden_states input to this layer
         if isinstance(args, tuple) and len(args) > 0:
             hidden = args[0]
-            hidden.sub_(4.0 * direction.unsqueeze(0))
+            hidden.sub_(cli.scale * direction.unsqueeze(0))
         return args
  
     next_layer = target_layer + 1
-    h = model.model.layers[next_layer].register_forward_pre_hook(pre_hook_c)
+    h = decoder_layers[next_layer].register_forward_pre_hook(pre_hook_c)
     with torch.no_grad():
         out_c = model(**inputs)
         logits_c = out_c.logits[0, -1, :].clone()
@@ -110,10 +123,10 @@ def main():
         call_count_d[0] += 1
         if isinstance(args, tuple) and len(args) > 0:
             if isinstance(args[0], torch.Tensor):
-                args[0].sub_(4.0 * direction.unsqueeze(0))
+                args[0].sub_(cli.scale * direction.unsqueeze(0))
         return args
  
-    h = model.model.layers[next_layer].self_attn.register_forward_pre_hook(pre_hook_d)
+    h = decoder_layers[next_layer].self_attn.register_forward_pre_hook(pre_hook_d)
     with torch.no_grad():
         out_d = model(**inputs)
         logits_d = out_d.logits[0, -1, :].clone()

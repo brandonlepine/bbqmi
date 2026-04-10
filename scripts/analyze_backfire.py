@@ -629,9 +629,39 @@ def plot_all(exp4_results, exp5_results, items, directions, proj_directions,
 # ===========================================================================
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=Path, default=None, help="Optional model path to resolve model_id/run_dir.")
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     args = parser.parse_args()
 
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    global ACTIVATION_DIR, BEHAVIORAL_DIR, FIGURES_DIR, RESULTS_DIR
+    ACTIVATION_DIR = subdirs.activations_so_dir
+    BEHAVIORAL_DIR = subdirs.behavioral_dir
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+
+    log(f"Run: model_id={model_id}  run_date={run_date}")
+    log(f"Run dir: {run_dir}")
+    log(f"Activations (SO): {ACTIVATION_DIR}")
+    log(f"Behavioral dir: {BEHAVIORAL_DIR}")
+    log(f"Analysis outputs: {RESULTS_DIR}")
+    log(f"Figures: {FIGURES_DIR}")
+
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     log("Loading data...")
     items, intervention = load_all_data()

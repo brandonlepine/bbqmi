@@ -32,7 +32,6 @@ import torch
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
-RESULTS_DIR = PROJECT_ROOT / "results" / "behavioral_pilot"
 DEFAULT_MODEL_PATH = Path(
     "/Users/brandonlepine/Repositories/Research_Repositories/smi/models/llama2-13b"
 )
@@ -112,9 +111,9 @@ def score_answer(model, tokenizer, prefix_ids: torch.Tensor,
         dict with score (mean log-prob), total_logprob, n_tokens
     """
     # Tokenize the answer (with leading space for natural continuation)
-    answer_ids = tokenizer.encode(
+    answer_ids = tokenizer(
         " " + answer_text, add_special_tokens=False, return_tensors="pt"
-    ).to(device)
+    )["input_ids"].to(device)
 
     n_answer_tokens = answer_ids.shape[1]
 
@@ -151,9 +150,7 @@ def score_answer(model, tokenizer, prefix_ids: torch.Tensor,
 def score_item(model, tokenizer, item: dict, device: str) -> dict:
     """Score all 3 answer options for one BBQ item."""
     prefix = format_prompt_for_scoring(item["context"], item["question"])
-    prefix_ids = tokenizer.encode(
-        prefix, add_special_tokens=True, return_tensors="pt"
-    ).to(device)
+    prefix_ids = tokenizer(prefix, add_special_tokens=True, return_tensors="pt")["input_ids"].to(device)
 
     answer_scores = {}
     for letter, text in item["answers"].items():
@@ -262,19 +259,47 @@ def main():
     parser.add_argument("--model_path", type=Path, default=DEFAULT_MODEL_PATH)
     parser.add_argument("--device", type=str, default="mps",
                         choices=["mps", "cuda", "cpu", "auto"])
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to today.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
+    parser.add_argument(
+        "--stimuli_json",
+        type=Path,
+        default=None,
+        help="Path to stimuli_so_YYYY-MM-DD.json. Defaults to newest in data/processed/.",
+    )
     parser.add_argument("--max_items", type=int, default=None)
     args = parser.parse_args()
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir, update_run_metadata
 
-    stimuli_path = DATA_DIR / "stimuli_so_2026-04-09.json"
-    if not stimuli_path.exists():
-        print(f"ERROR: {stimuli_path} not found.")
-        return
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+    results_dir = subdirs.behavioral_dir
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Run: model_id={model_id}  run_date={run_date}")
+    print(f"Run dir: {run_dir}")
+    print(f"Behavioral dir: {results_dir}")
+
+    stimuli_path = args.stimuli_json
+    if stimuli_path is None:
+        candidates = sorted(DATA_DIR.glob("stimuli_so_*.json"))
+        if not candidates:
+            print(f"ERROR: no stimuli_so_*.json found in {DATA_DIR}. Run prepare_stimuli.py first.")
+            return
+        stimuli_path = candidates[-1]
 
     with open(stimuli_path) as f:
         items = json.load(f)
-    print(f"Loaded {len(items)} SO stimuli")
+    print(f"Loaded {len(items)} SO stimuli from {stimuli_path.name}")
 
     if args.max_items:
         items = items[:args.max_items]
@@ -329,7 +354,7 @@ def main():
             flush_mps()
 
         if (i + 1) % 200 == 0:
-            with open(RESULTS_DIR / "behavioral_results_partial.json", "w") as f:
+            with open(results_dir / "behavioral_results_partial.json", "w") as f:
                 json.dump(results, f, indent=2)
 
     elapsed = time.time() - t0
@@ -344,8 +369,11 @@ def main():
 
     summary_lines = [
         "=" * 60,
-        "  BBQ SO — Log-Prob Scoring | Llama-2-13B base",
+        "  BBQ SO — Log-Prob Scoring",
         "=" * 60,
+        f"  model_id: {model_id}",
+        f"  model_path: {args.model_path}",
+        f"  stimuli: {stimuli_path.name}",
         "",
         "PREDICTION DISTRIBUTION:",
         f"  By role:   stereo={role_dist.get('stereotyped_target',0)} "
@@ -397,18 +425,32 @@ def main():
     summary = "\n".join(summary_lines)
     print(summary)
 
-    with open(RESULTS_DIR / "behavioral_results.json", "w") as f:
+    with open(results_dir / "behavioral_results.json", "w") as f:
         json.dump(results, f, indent=2)
-    with open(RESULTS_DIR / "bias_scores.json", "w") as f:
+    with open(results_dir / "bias_scores.json", "w") as f:
         json.dump(scores, f, indent=2)
-    with open(RESULTS_DIR / "behavioral_summary.txt", "w") as f:
+    with open(results_dir / "behavioral_summary.txt", "w") as f:
         f.write(summary)
 
-    print(f"\nSaved to {RESULTS_DIR}/")
+    print(f"\nSaved to {results_dir}/")
 
-    partial = RESULTS_DIR / "behavioral_results_partial.json"
+    partial = results_dir / "behavioral_results_partial.json"
     if partial.exists():
         partial.unlink()
+
+    update_run_metadata(
+        run_dir=run_dir,
+        step="behavioral_pilot",
+        payload={
+            "model_id": model_id,
+            "run_date": run_date,
+            "model_path": str(args.model_path),
+            "device": args.device,
+            "stimuli_file": Path(stimuli_path).name,
+            "output_dir": str(results_dir),
+            "max_items": args.max_items,
+        },
+    )
 
 
 if __name__ == "__main__":

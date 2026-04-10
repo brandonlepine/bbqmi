@@ -620,18 +620,53 @@ def plot_all(a1, a2, a3, a4, n_layers, figures_dir):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--activation_dir", type=Path, default=ACTIVATION_DIR)
+    parser.add_argument("--model_path", type=Path, default=None, help="Optional model path to resolve model_id/run_dir.")
+    parser.add_argument("--model_id", type=str, default=None, help="Override model id used for results/runs/<model_id>/")
+    parser.add_argument("--run_date", type=str, default=None, help="Run date (YYYY-MM-DD). Defaults to newest for model_id.")
+    parser.add_argument("--run_dir", type=Path, default=None, help="Explicit run directory override.")
     parser.add_argument("--skip_plots", action="store_true")
     args = parser.parse_args()
  
+    from bbqmi.run_paths import ensure_run_subdirs, resolve_run_dir
+
+    run_dir, model_id, run_date = resolve_run_dir(
+        project_root=PROJECT_ROOT,
+        run_dir_arg=args.run_dir,
+        model_path=args.model_path,
+        model_id_arg=args.model_id,
+        run_date_arg=args.run_date,
+        must_exist=False,
+    )
+    subdirs = ensure_run_subdirs(run_dir)
+
+    global FIGURES_DIR, RESULTS_DIR, BEHAVIORAL_DIR
+    FIGURES_DIR = subdirs.figures_dir
+    RESULTS_DIR = subdirs.analysis_dir
+    BEHAVIORAL_DIR = subdirs.behavioral_dir
+
+    print(f"Run: model_id={model_id}  run_date={run_date}")
+    print(f"Run dir: {run_dir}")
+    print(f"Activations (SO): {subdirs.activations_so_dir}")
+    print(f"Behavioral dir: {BEHAVIORAL_DIR}")
+    print(f"Analysis outputs: {RESULTS_DIR}")
+    print(f"Figures: {FIGURES_DIR}")
+
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
  
     # Find behavioral results
-    behavioral_candidates = sorted(BEHAVIORAL_DIR.glob("behavioral_results*.json"))
-    if not behavioral_candidates:
-        print("ERROR: No behavioral results found")
-        return
-    behavioral_path = behavioral_candidates[-1]
-    print(f"Using behavioral results: {behavioral_path.name}")
+    behavioral_path = BEHAVIORAL_DIR / "behavioral_results.json"
+    if not behavioral_path.exists():
+        behavioral_candidates = sorted(BEHAVIORAL_DIR.glob("behavioral_results*.json"))
+        if not behavioral_candidates:
+            print(f"ERROR: No behavioral results found in {BEHAVIORAL_DIR}")
+            return
+        behavioral_path = behavioral_candidates[-1]
+    print(f"Using behavioral results: {behavioral_path}")
+
+    # Default activation_dir to this run if user didn't override
+    if args.activation_dir == ACTIVATION_DIR:
+        args.activation_dir = subdirs.activations_so_dir
  
     items = load_data(args.activation_dir, behavioral_path)
  
