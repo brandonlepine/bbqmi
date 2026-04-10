@@ -634,6 +634,14 @@ def analyze_attention_heads(model, tokenizer, items, device, max_items=200):
     items_to_analyze = items[:max_items]
     log(f"  Analyzing {len(items_to_analyze)} items")
 
+    # Transformers may default to SDPA/flash attention which cannot return attentions.
+    # Switch to eager attention so `output_attentions=True` yields a real attentions tuple.
+    if hasattr(model, "set_attn_implementation"):
+        try:
+            model.set_attn_implementation("eager")
+        except Exception as e:
+            log(f"  WARNING: failed to set attn_implementation='eager': {e}")
+
     n_layers = model.config.num_hidden_layers
     n_heads = model.config.num_attention_heads
 
@@ -669,6 +677,12 @@ def analyze_attention_heads(model, tokenizer, items, device, max_items=200):
             outputs = model(**inputs, output_attentions=True)
             logits = outputs.logits[0, -1, :]
             attentions = outputs.attentions  # tuple of (1, n_heads, seq, seq)
+        if attentions is None:
+            raise RuntimeError(
+                "Model returned attentions=None with output_attentions=True. "
+                "This usually means attention implementation is SDPA/flash. "
+                "Try transformers>=4.44 and ensure eager attention is enabled."
+            )
 
         predicted, _ = extract_answer(logits, tokenizer)
         pred_role = item["answer_roles"].get(predicted, "")
