@@ -1,0 +1,26 @@
+# Minimal runtime dependencies for running this repo on a GPU box (e.g., RunPod H100).
+#
+# IMPORTANT: Install a CUDA-enabled PyTorch separately, matching the CUDA version on the image.
+# See README "RunPod / H100 quickstart" for the recommended install command.
+#
+# Core numerics / data
+numpy>=2.0,<3
+pandas>=2.2,<3
+scipy>=1.12,<2
+scikit-learn>=1.4,<2
+
+# Plotting (analysis scripts save figures)
+matplotlib>=3.8,<4
+
+# LLM tooling
+transformers>=4.44,<5
+tokenizers>=0.19,<1
+accelerate>=0.33,<1
+safetensors>=0.4,<1
+sentencepiece>=0.2,<1
+
+# Utilities
+tqdm>=4.66,<5
+pyyaml>=6.0,<7
+rich>=13.7,<14
+

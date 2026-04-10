@@ -75,8 +75,62 @@ python scripts/02_extract_hidden_states.py --input_csv data/processed/dataset_pr
 python scripts/03_probe_group_signal.py --hidden_states_npz artifacts/hidden_states_$(date +%F).npz
 ```
 
+### RunPod / H100 quickstart
+
+This is the minimal sequence to run on a GPU instance (e.g., H100) without installing notebook/dev tooling.
+
+- **Clone this repo**
+
+```bash
+git clone <YOUR_REPO_URL>
+cd bbqmi
+```
+
+- **Create env + install minimal deps**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.runpod.txt
+pip install -e .
+```
+
+- **Install CUDA-enabled PyTorch**
+
+PyTorch wheels are CUDA-version-specific. On most CUDA 12.x images, this works (adjust if your image differs):
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu124 torch
+```
+
+- **Get the BBQ dataset**
+
+This repo expects the BBQ dataset repo at `data/BBQ/`:
+
+```bash
+git clone https://github.com/nyu-mll/BBQ.git data/BBQ
+```
+
+- **Prepare stimuli (writes dated outputs into `data/processed/`)**
+
+```bash
+python scripts/prepare_stimuli.py
+```
+
+- **Run the behavioral pilot**
+
+```bash
+python scripts/behavioral_pilot.py --device cuda --model_path /path/to/llama2-13b
+```
+
+- **Run the decomposition/ablation analysis**
+
+```bash
+python scripts/analyze_decomposition.py --ablation_only --device cuda --model_path /path/to/llama2-13b --alpha 14.0
+```
+
 ### Notes / conventions
 
 - Output file names created by scripts include the run date suffix `YYYY-MM-DD`.
 - `data/`, `artifacts/`, and `outputs/` contents are ignored by git (folders are tracked).
-
