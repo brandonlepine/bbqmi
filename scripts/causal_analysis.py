@@ -95,9 +95,14 @@ def load_stimuli():
     return items
 
 
-def load_deltas_and_directions(n_layers=40):
-    """Load precomputed deltas and compute directions."""
+def load_deltas_and_directions(n_layers: int | None = None):
+    """Load precomputed deltas and compute directions.
+
+    `n_layers` is inferred from the saved activation tensors when possible.
+    (For Llama-2-13B this will be 40, matching previous behavior.)
+    """
     items_raw = []
+    inferred_n_layers: int | None = None
     for npz_path in sorted(ACTIVATION_DIR.glob("item_*.npz")):
         data = np.load(npz_path, allow_pickle=True)
         meta = json.loads(str(data["metadata"]))
@@ -108,6 +113,13 @@ def load_deltas_and_directions(n_layers=40):
                 term_to_tokens[t].append(entry["token_indices"])
         all_identity_indices = meta["identity_token_indices"]
         hidden_identity_raw = data["hidden_identity"]
+        if inferred_n_layers is None:
+            inferred_n_layers = int(hidden_identity_raw.shape[0])
+        elif int(hidden_identity_raw.shape[0]) != inferred_n_layers:
+            raise ValueError(
+                f"Inconsistent n_layers across activation files: "
+                f"expected {inferred_n_layers}, got {hidden_identity_raw.shape[0]} in {npz_path}"
+            )
         idx_to_pos = {ti: p for p, ti in enumerate(all_identity_indices)}
         term_hidden = {}
         for term, token_lists in term_to_tokens.items():
@@ -148,25 +160,28 @@ def load_deltas_and_directions(n_layers=40):
         g_deltas = [d for d in deltas if d["stereo_group"] == g]
         if g_deltas:
             mean_dir = np.stack([d["delta_normed"] for d in g_deltas]).mean(axis=0)
-            for layer in range(n_layers):
+            for layer in range(mean_dir.shape[0]):
                 norm = np.linalg.norm(mean_dir[layer])
                 if norm > 1e-10:
                     mean_dir[layer] /= norm
             directions[g] = mean_dir
 
     # Gender-projected directions
+    if "gay" not in directions or "lesbian" not in directions:
+        raise ValueError("Expected both 'gay' and 'lesbian' directions to compute gender projection.")
     gender_dir = (directions["gay"] - directions["lesbian"]) / 2.0
     proj_directions = {}
     for g in groups:
         proj = np.zeros_like(directions[g])
-        for layer in range(n_layers):
+        for layer in range(proj.shape[0]):
             proj[layer] = project_out(directions[g][layer], gender_dir[layer])
             norm = np.linalg.norm(proj[layer])
             if norm > 1e-10:
                 proj[layer] /= norm
         proj_directions[g] = proj.astype(np.float64)
 
-    return deltas, directions, proj_directions, gender_dir
+    n_layers_out = n_layers or inferred_n_layers or int(next(iter(directions.values())).shape[0])
+    return deltas, directions, proj_directions, gender_dir, int(n_layers_out)
 
 
 def find_identity_token_positions(text, tokenizer):
@@ -218,33 +233,87 @@ def find_identity_token_positions(text, tokenizer):
     return term_positions
 
 
-def find_identity_positions_bpe(prompt, tokenizer):
-    """Robust BPE-based identity token detection.
+def find_identity_positions_bpe(prompt, tokenizer, *, max_length: int = 2048):
+    """Identity token detection aligned to model inputs.
 
-    Tokenizes the prompt and checks which tokens, when decoded, contain
-    identity substrings.
+    Primary path (preferred):
+    - Use `offset_mapping` (fast tokenizers) and exact *word-boundary* matches in the prompt.
+      This avoids false positives like matching the token "a" as "part of" the term "gay".
+
+    Fallback path:
+    - Exact token-sequence matching for each term (and space-prefixed term) within `input_ids`.
     """
-    input_ids = tokenizer.encode(prompt, add_special_tokens=True)
-    positions = {}
+    # --- Preferred: offset mapping (fast tokenizers) ---
+    try:
+        enc = tokenizer(
+            prompt,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=max_length,
+            return_offsets_mapping=True,
+        )
+        if "offset_mapping" in enc and enc["offset_mapping"] is not None:
+            input_ids = enc["input_ids"]
+            offsets = enc["offset_mapping"]
+
+            # Some tokenizers return batchless lists, others return a batch of size 1.
+            if isinstance(input_ids[0], list):
+                input_ids = input_ids[0]
+                offsets = offsets[0]
+
+            positions: dict[str, list[int]] = {}
+            prompt_lower = prompt.lower()
+
+            for term in IDENTITY_TERMS_ORDERED:
+                term_lower = term.lower()
+                # Exact word-boundary match in the original prompt text
+                for m in re.finditer(r"\b" + re.escape(term_lower) + r"\b", prompt_lower):
+                    m_start, m_end = m.start(), m.end()
+                    for tok_idx, (t_start, t_end) in enumerate(offsets):
+                        # Special tokens may have (0, 0) or invalid spans; skip those.
+                        if t_end is None or t_start is None:
+                            continue
+                        if t_end <= t_start:
+                            continue
+                        if t_start < m_end and t_end > m_start:
+                            positions.setdefault(term, []).append(tok_idx)
+
+            for term in list(positions.keys()):
+                positions[term] = sorted(set(positions[term]))
+            return positions
+    except Exception:
+        pass
+
+    # --- Fallback: exact token-sequence matching ---
+    input_ids = tokenizer.encode(prompt, add_special_tokens=True, truncation=True, max_length=max_length)
+    positions: dict[str, list[int]] = {}
 
     for term in IDENTITY_TERMS_ORDERED:
-        term_lower = term.lower()
-        term_positions = []
+        candidates: list[list[int]] = []
+        for s in (term, f" {term}"):
+            ids = tokenizer.encode(s, add_special_tokens=False)
+            if ids:
+                candidates.append(ids)
+        # Deduplicate candidate sequences
+        uniq: list[list[int]] = []
+        seen = set()
+        for c in candidates:
+            t = tuple(c)
+            if t not in seen:
+                uniq.append(c)
+                seen.add(t)
 
-        for i, tid in enumerate(input_ids):
-            decoded = tokenizer.decode([tid]).lower().strip()
-            # Check if this token is part of the identity term
-            if decoded and (decoded in term_lower or term_lower in decoded):
-                # Verify by checking surrounding context
-                # Decode a window and check if the term appears
-                window_start = max(0, i - 2)
-                window_end = min(len(input_ids), i + 3)
-                window_text = tokenizer.decode(input_ids[window_start:window_end]).lower()
-                if term_lower in window_text:
-                    term_positions.append(i)
+        hits: set[int] = set()
+        for seq in uniq:
+            L = len(seq)
+            if L == 0 or L > len(input_ids):
+                continue
+            for i in range(0, len(input_ids) - L + 1):
+                if input_ids[i : i + L] == seq:
+                    hits.update(range(i, i + L))
 
-        if term_positions:
-            positions[term] = sorted(set(term_positions))
+        if hits:
+            positions[term] = sorted(hits)
 
     return positions
 
@@ -446,7 +515,7 @@ def run_sign_flip(model, tokenizer, items, directions, proj_directions,
 # ===========================================================================
 # Analysis 3: Stereotype-cluster-specific directions
 # ===========================================================================
-def compute_cluster_directions(deltas, n_layers):
+def compute_cluster_directions(deltas, n_layers: int | None = None):
     """Compute directions specific to infidelity and instability stereotypes."""
     log("\n" + "=" * 70)
     log("  STEREOTYPE CLUSTER ANALYSIS")
@@ -479,7 +548,7 @@ def compute_cluster_directions(deltas, n_layers):
             continue
         stacked = np.stack([d["delta_normed"] for d in items])
         mean_dir = stacked.mean(axis=0).astype(np.float64)
-        for layer in range(n_layers):
+        for layer in range(mean_dir.shape[0]):
             norm = np.linalg.norm(mean_dir[layer])
             if norm > 1e-10:
                 mean_dir[layer] /= norm
@@ -915,7 +984,7 @@ def main():
     # Load data
     log("Loading data...")
     items = load_stimuli()
-    deltas, directions, proj_directions, gender_dir = load_deltas_and_directions()
+    deltas, directions, proj_directions, gender_dir, n_layers = load_deltas_and_directions()
 
     if args.max_items:
         items = items[:args.max_items]
@@ -944,7 +1013,7 @@ def main():
 
     # --- Analysis 3: Cluster directions (no model needed for direction computation) ---
     if run_all or args.analysis in ["cluster_only", "all"]:
-        cluster_dirs, clusters = compute_cluster_directions(deltas, n_layers=40)
+        cluster_dirs, clusters = compute_cluster_directions(deltas, n_layers=n_layers)
 
     # --- Analysis 1 + 2: Identity-token ablation + sign flip ---
     if run_all or args.analysis == "sign_flip_only":
@@ -989,7 +1058,7 @@ def main():
     # --- Plotting ---
     log("\nGenerating figures...")
     plot_all(sign_flip_scores, cluster_scores, attn_results,
-             layer_sweep_scores, cluster_dirs, 40, FIGURES_DIR)
+             layer_sweep_scores, cluster_dirs, n_layers, FIGURES_DIR)
 
     log("\nAll done.")
 
